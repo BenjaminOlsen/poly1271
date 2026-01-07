@@ -63,7 +63,8 @@ typedef struct {
     uint64_t r2[5];      /* r^2 */
     uint64_t r3[5];      /* r^3 */
     uint64_t r4[5];      /* r^4 */
-    __m256i rv[5];       /* rv[i] = {r4[i], r3[i], r2[i], r[i]} */
+    __m256i rv[5];       /* rv[i] = {r4[i], r3[i], r2[i], r[i]} for combine */
+    __m256i r4v[5];      /* r4v[i] = broadcast(r4[i]) for mul_r4 */
     uint64_t s[2];       /* s key */
     uint8_t  buf[60];    /* partial block buffer (4 blocks) */
     uint8_t  buflen;

@@ -10,9 +10,7 @@
 #define MASK26 ((1ULL << 26) - 1)
 #define MASK23 ((1ULL << 23) - 1)
 
-/* -------------------------------------------------------------------------- */
-/* radix-26 conversions                                                       */
-/* -------------------------------------------------------------------------- */
+/* radix-26 conversions */
 
 static inline void decode_block_to_limbs(uint64_t limbs[5], const uint8_t* block) {
     uint64_t lo = (uint64_t)block[0] | ((uint64_t)block[1] << 8) |
@@ -29,6 +27,44 @@ static inline void decode_block_to_limbs(uint64_t limbs[5], const uint8_t* block
     limbs[2] = ((lo >> 52) | (hi << 12)) & MASK26;
     limbs[3] = (hi >> 14) & MASK26;
     limbs[4] = (hi >> 40) & MASK26;
+}
+
+/* decode 4 consecutive 15-byte blocks directly to vector format using gather */
+static inline void decode_4blocks_to_vec(__m256i out[5], const uint8_t* msg) {
+    /* block offsets: 0, 15, 30, 45 bytes
+     * lo = bytes 0-7 of each block (8 bytes)
+     * hi = bytes 8-14 of each block (7 bytes) + delimiter at bit 56 */
+    const __m256i lo_idx = _mm256_set_epi64x(45, 30, 15, 0);
+    const __m256i hi_idx = _mm256_set_epi64x(53, 38, 23, 8);
+
+    /* gather lo and hi values from memory */
+    __m256i lo = _mm256_i64gather_epi64((const long long*)msg, lo_idx, 1);
+    __m256i hi = _mm256_i64gather_epi64((const long long*)msg, hi_idx, 1);
+
+    /* mask hi to 7 bytes (56 bits) and add delimiter bit */
+    const __m256i mask56 = _mm256_set1_epi64x(0x00FFFFFFFFFFFFFFULL);
+    const __m256i delim = _mm256_set1_epi64x(1ULL << 56);
+    hi = _mm256_or_si256(_mm256_and_si256(hi, mask56), delim);
+
+    /* convert to radix-2^26 limbs */
+    const __m256i mask26 = _mm256_set1_epi64x(MASK26);
+
+    /* limb0 = lo & MASK26 */
+    out[0] = _mm256_and_si256(lo, mask26);
+
+    /* limb1 = (lo >> 26) & MASK26 */
+    out[1] = _mm256_and_si256(_mm256_srli_epi64(lo, 26), mask26);
+
+    /* limb2 = ((lo >> 52) | (hi << 12)) & MASK26 */
+    __m256i lo_hi = _mm256_srli_epi64(lo, 52);
+    __m256i hi_lo = _mm256_slli_epi64(hi, 12);
+    out[2] = _mm256_and_si256(_mm256_or_si256(lo_hi, hi_lo), mask26);
+
+    /* limb3 = (hi >> 14) & MASK26 */
+    out[3] = _mm256_and_si256(_mm256_srli_epi64(hi, 14), mask26);
+
+    /* limb4 = (hi >> 40) & MASK26 */
+    out[4] = _mm256_and_si256(_mm256_srli_epi64(hi, 40), mask26);
 }
 
 static inline void decode_partial_to_limbs(uint64_t limbs[5], const uint8_t* block, size_t len) {
@@ -66,9 +102,7 @@ static inline void convert_from_limbs(uint64_t v[2], const uint64_t limbs[5]) {
     v[1] = (limbs[2] >> 12) | (limbs[3] << 14) | (limbs[4] << 40);
 }
 
-/* -------------------------------------------------------------------------- */
-/* scalar radix-26 arithmetic                                                 */
-/* -------------------------------------------------------------------------- */
+/* scalar radix-26 arithmetic */
 
 static inline void carry26_scalar(uint64_t limbs[5]) {
     uint64_t c;
@@ -78,7 +112,7 @@ static inline void carry26_scalar(uint64_t limbs[5]) {
     c = limbs[3] >> 26; limbs[3] &= MASK26; limbs[4] += c;
 }
 
-/* reduce mod 2^127-1; bit 127 = limb4 bit 23 */
+/* reduce mod 2^127-1 */
 static inline void reduce_p_scalar(uint64_t limbs[5]) {
     uint64_t c = limbs[4] >> 23;
     limbs[4] &= MASK23;
@@ -144,9 +178,7 @@ static void square_limbs_scalar(uint64_t out[5], const uint64_t a[5]) {
     reduce_p_scalar(out);
 }
 
-/* -------------------------------------------------------------------------- */
-/* AVX2 helpers                                                               
-*/
+/* avx2 helpers */
 
 static inline uint64_t load64_le(const uint8_t* p) {
     return (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) |
@@ -168,14 +200,9 @@ static void secure_zero(void* ptr, size_t len) {
     while (len--) *p++ = 0;
 }
 
-/* multiply 4 parallel accumulators by r^4 (broadcast) */
-static inline void mul_r4_avx2(__m256i acc[5], const uint64_t r4[5]) {
-    __m256i r0 = _mm256_set1_epi64x((int64_t)r4[0]);
-    __m256i r1 = _mm256_set1_epi64x((int64_t)r4[1]);
-    __m256i r2 = _mm256_set1_epi64x((int64_t)r4[2]);
-    __m256i r3 = _mm256_set1_epi64x((int64_t)r4[3]);
-    __m256i r4v = _mm256_set1_epi64x((int64_t)r4[4]);
-
+/* multiply 4 parallel accumulators by r^4 */
+static inline void mul_r4_avx2(__m256i acc[5], const __m256i r4v[5]) {
+    const __m256i r0 = r4v[0], r1 = r4v[1], r2 = r4v[2], r3 = r4v[3], r4 = r4v[4];
     __m256i a0 = acc[0], a1 = acc[1], a2 = acc[2], a3 = acc[3], a4 = acc[4];
 
     __m256i d0 = _mm256_mul_epu32(a0, r0);
@@ -184,15 +211,15 @@ static inline void mul_r4_avx2(__m256i acc[5], const uint64_t r4[5]) {
                                   _mm256_mul_epu32(a2, r0));
     __m256i d3 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a0, r3), _mm256_mul_epu32(a1, r2)),
                                   _mm256_add_epi64(_mm256_mul_epu32(a2, r1), _mm256_mul_epu32(a3, r0)));
-    __m256i d4 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a0, r4v), _mm256_mul_epu32(a1, r3)),
+    __m256i d4 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a0, r4), _mm256_mul_epu32(a1, r3)),
                                   _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a2, r2), _mm256_mul_epu32(a3, r1)),
                                                    _mm256_mul_epu32(a4, r0)));
-    __m256i d5 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a1, r4v), _mm256_mul_epu32(a2, r3)),
+    __m256i d5 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a1, r4), _mm256_mul_epu32(a2, r3)),
                                   _mm256_add_epi64(_mm256_mul_epu32(a3, r2), _mm256_mul_epu32(a4, r1)));
-    __m256i d6 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a2, r4v), _mm256_mul_epu32(a3, r3)),
+    __m256i d6 = _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(a2, r4), _mm256_mul_epu32(a3, r3)),
                                   _mm256_mul_epu32(a4, r2));
-    __m256i d7 = _mm256_add_epi64(_mm256_mul_epu32(a3, r4v), _mm256_mul_epu32(a4, r3));
-    __m256i d8 = _mm256_mul_epu32(a4, r4v);
+    __m256i d7 = _mm256_add_epi64(_mm256_mul_epu32(a3, r4), _mm256_mul_epu32(a4, r3));
+    __m256i d8 = _mm256_mul_epu32(a4, r4);
 
     d0 = _mm256_add_epi64(d0, _mm256_slli_epi64(d5, 3));
     d1 = _mm256_add_epi64(d1, _mm256_slli_epi64(d6, 3));
@@ -223,40 +250,85 @@ static inline void add_4blocks_avx2(__m256i acc[5],
     }
 }
 
-/* combine: lane0*r^4 + lane1*r^3 + lane2*r^2 + lane3*r */
+/* add 4 blocks already in vector format */
+static inline void add_4blocks_vec_avx2(__m256i acc[5], const __m256i blocks[5]) {
+    acc[0] = _mm256_add_epi64(acc[0], blocks[0]);
+    acc[1] = _mm256_add_epi64(acc[1], blocks[1]);
+    acc[2] = _mm256_add_epi64(acc[2], blocks[2]);
+    acc[3] = _mm256_add_epi64(acc[3], blocks[3]);
+    acc[4] = _mm256_add_epi64(acc[4], blocks[4]);
+}
+
+/* horizontal sum of all 4 lanes */
+static inline uint64_t hsum_epi64(__m256i v) {
+    /* v = [A, B, C, D] */
+    __m256i hi = _mm256_permute4x64_epi64(v, 0x4E);/* [C, D, A, B] */
+    __m256i sum1 = _mm256_add_epi64(v, hi);         /* [A+C, B+D, C+A, D+B] */
+    __m128i lo128 = _mm256_castsi256_si128(sum1);   /* [A+C, B+D] */
+    __m128i hi128 = _mm_unpackhi_epi64(lo128, lo128); /* [B+D, B+D] */
+    __m128i sum2 = _mm_add_epi64(lo128, hi128);     /* [A+B+C+D, ...] */
+    return (uint64_t)_mm_cvtsi128_si64(sum2);
+}
+
+/* combine 4 lanes: lane0*r^4 + lane1*r^3 + lane2*r^2 + lane3*r */
 static void combine_4lanes_avx2(uint64_t out[5], const __m256i acc[5], const __m256i rv[5]) {
-    __m256i d[9];
-    for (int k = 0; k < 9; k++) d[k] = _mm256_setzero_si256();
+    /* unrolled 5x5 schoolbook */
+    const __m256i a0 = acc[0], a1 = acc[1], a2 = acc[2], a3 = acc[3], a4 = acc[4];
+    const __m256i r0 = rv[0], r1 = rv[1], r2 = rv[2], r3 = rv[3], r4 = rv[4];
+    __m256i d0 = _mm256_mul_epu32(a0, r0);
+    __m256i d1 = _mm256_mul_epu32(a0, r1);
+    __m256i d2 = _mm256_mul_epu32(a0, r2);
+    __m256i d3 = _mm256_mul_epu32(a0, r3);
+    __m256i d4 = _mm256_mul_epu32(a0, r4);
+    __m256i d5 = _mm256_mul_epu32(a1, r4);
+    __m256i d6 = _mm256_mul_epu32(a2, r4);
+    __m256i d7 = _mm256_mul_epu32(a3, r4);
+    __m256i d8 = _mm256_mul_epu32(a4, r4);
 
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < 5; j++) {
-            __m256i prod = _mm256_mul_epu32(acc[i], rv[j]);
-            d[i + j] = _mm256_add_epi64(d[i + j], prod);
-        }
-    }
+    d1 = _mm256_add_epi64(d1, _mm256_mul_epu32(a1, r0));
+    d2 = _mm256_add_epi64(d2, _mm256_mul_epu32(a1, r1));
+    d3 = _mm256_add_epi64(d3, _mm256_mul_epu32(a1, r2));
+    d4 = _mm256_add_epi64(d4, _mm256_mul_epu32(a1, r3));
+    d5 = _mm256_add_epi64(d5, _mm256_mul_epu32(a2, r3));
+    d6 = _mm256_add_epi64(d6, _mm256_mul_epu32(a3, r3));
+    d7 = _mm256_add_epi64(d7, _mm256_mul_epu32(a4, r3));
 
-    d[0] = _mm256_add_epi64(d[0], _mm256_slli_epi64(d[5], 3));
-    d[1] = _mm256_add_epi64(d[1], _mm256_slli_epi64(d[6], 3));
-    d[2] = _mm256_add_epi64(d[2], _mm256_slli_epi64(d[7], 3));
-    d[3] = _mm256_add_epi64(d[3], _mm256_slli_epi64(d[8], 3));
+    d2 = _mm256_add_epi64(d2, _mm256_mul_epu32(a2, r0));
+    d3 = _mm256_add_epi64(d3, _mm256_mul_epu32(a2, r1));
+    d4 = _mm256_add_epi64(d4, _mm256_mul_epu32(a2, r2));
+    d5 = _mm256_add_epi64(d5, _mm256_mul_epu32(a3, r2));
+    d6 = _mm256_add_epi64(d6, _mm256_mul_epu32(a4, r2));
 
+    d3 = _mm256_add_epi64(d3, _mm256_mul_epu32(a3, r0));
+    d4 = _mm256_add_epi64(d4, _mm256_mul_epu32(a3, r1));
+    d5 = _mm256_add_epi64(d5, _mm256_mul_epu32(a4, r1));
+
+    d4 = _mm256_add_epi64(d4, _mm256_mul_epu32(a4, r0));
+
+    /* fold high limbs: 2^130 = 8 mod p */
+    d0 = _mm256_add_epi64(d0, _mm256_slli_epi64(d5, 3));
+    d1 = _mm256_add_epi64(d1, _mm256_slli_epi64(d6, 3));
+    d2 = _mm256_add_epi64(d2, _mm256_slli_epi64(d7, 3));
+    d3 = _mm256_add_epi64(d3, _mm256_slli_epi64(d8, 3));
+
+    /* carry propagation */
     __m256i mask26 = _mm256_set1_epi64x(MASK26);
     __m256i mask23 = _mm256_set1_epi64x(MASK23);
     __m256i c;
 
-    c = _mm256_srli_epi64(d[0], 26); d[0] = _mm256_and_si256(d[0], mask26); d[1] = _mm256_add_epi64(d[1], c);
-    c = _mm256_srli_epi64(d[1], 26); d[1] = _mm256_and_si256(d[1], mask26); d[2] = _mm256_add_epi64(d[2], c);
-    c = _mm256_srli_epi64(d[2], 26); d[2] = _mm256_and_si256(d[2], mask26); d[3] = _mm256_add_epi64(d[3], c);
-    c = _mm256_srli_epi64(d[3], 26); d[3] = _mm256_and_si256(d[3], mask26); d[4] = _mm256_add_epi64(d[4], c);
-    c = _mm256_srli_epi64(d[4], 23); d[4] = _mm256_and_si256(d[4], mask23); d[0] = _mm256_add_epi64(d[0], c);
-    c = _mm256_srli_epi64(d[0], 26); d[0] = _mm256_and_si256(d[0], mask26); d[1] = _mm256_add_epi64(d[1], c);
+    c = _mm256_srli_epi64(d0, 26); d0 = _mm256_and_si256(d0, mask26); d1 = _mm256_add_epi64(d1, c);
+    c = _mm256_srli_epi64(d1, 26); d1 = _mm256_and_si256(d1, mask26); d2 = _mm256_add_epi64(d2, c);
+    c = _mm256_srli_epi64(d2, 26); d2 = _mm256_and_si256(d2, mask26); d3 = _mm256_add_epi64(d3, c);
+    c = _mm256_srli_epi64(d3, 26); d3 = _mm256_and_si256(d3, mask26); d4 = _mm256_add_epi64(d4, c);
+    c = _mm256_srli_epi64(d4, 23); d4 = _mm256_and_si256(d4, mask23); d0 = _mm256_add_epi64(d0, c);
+    c = _mm256_srli_epi64(d0, 26); d0 = _mm256_and_si256(d0, mask26); d1 = _mm256_add_epi64(d1, c);
 
-    for (int i = 0; i < 5; i++) {
-        __m128i lo = _mm256_castsi256_si128(d[i]);
-        __m128i hi = _mm256_extracti128_si256(d[i], 1);
-        __m128i sum = _mm_add_epi64(lo, hi);
-        out[i] = (uint64_t)_mm_extract_epi64(sum, 0) + (uint64_t)_mm_extract_epi64(sum, 1);
-    }
+    /* horizontal sum */
+    out[0] = hsum_epi64(d0);
+    out[1] = hsum_epi64(d1);
+    out[2] = hsum_epi64(d2);
+    out[3] = hsum_epi64(d3);
+    out[4] = hsum_epi64(d4);
 
     carry26_scalar(out);
     reduce_p_scalar(out);
@@ -264,40 +336,46 @@ static void combine_4lanes_avx2(uint64_t out[5], const __m256i acc[5], const __m
 
 /* process n rounds of 4 blocks, combine once at end */
 static void process_nblocks_avx2(uint64_t acc[5], const uint8_t* msg, int nrounds,
-                                  const uint64_t r4[5], const __m256i rv[5]) {
+                                  const __m256i r4v[5], const __m256i rv[5]) {
     __m256i pacc[5];
     for (int i = 0; i < 5; i++)
         pacc[i] = _mm256_set_epi64x(0, 0, 0, (int64_t)acc[i]);
 
     for (int round = 0; round < nrounds; round++) {
-        uint64_t b0[5], b1[5], b2[5], b3[5];
-        decode_block_to_limbs(b0, msg + (round * 4 + 0) * 15);
-        decode_block_to_limbs(b1, msg + (round * 4 + 1) * 15);
-        decode_block_to_limbs(b2, msg + (round * 4 + 2) * 15);
-        decode_block_to_limbs(b3, msg + (round * 4 + 3) * 15);
-
-        add_4blocks_avx2(pacc, b0, b1, b2, b3);
+        __m256i blocks[5];
+        decode_4blocks_to_vec(blocks, msg + round * 60);
+        add_4blocks_vec_avx2(pacc, blocks);
 
         if (round < nrounds - 1)
-            mul_r4_avx2(pacc, r4);
+            mul_r4_avx2(pacc, r4v);
     }
 
     combine_4lanes_avx2(acc, pacc, rv);
 }
 
 static inline void process_4blocks_avx2(uint64_t acc[5], const uint8_t* msg,
-                                         const uint64_t r4[5], const __m256i rv[5]) {
-    process_nblocks_avx2(acc, msg, 1, r4, rv);
+                                         const __m256i r4v[5], const __m256i rv[5]) {
+    process_nblocks_avx2(acc, msg, 1, r4v, rv);
 }
 
 static inline void process_16blocks_avx2(uint64_t acc[5], const uint8_t* msg,
-                                          const uint64_t r4[5], const __m256i rv[5]) {
-    process_nblocks_avx2(acc, msg, 4, r4, rv);
+                                          const __m256i r4v[5], const __m256i rv[5]) {
+    process_nblocks_avx2(acc, msg, 4, r4v, rv);
 }
 
 static inline void process_32blocks_avx2(uint64_t acc[5], const uint8_t* msg,
-                                          const uint64_t r4[5], const __m256i rv[5]) {
-    process_nblocks_avx2(acc, msg, 8, r4, rv);
+                                          const __m256i r4v[5], const __m256i rv[5]) {
+    process_nblocks_avx2(acc, msg, 8, r4v, rv);
+}
+
+static inline void process_64blocks_avx2(uint64_t acc[5], const uint8_t* msg,
+                                          const __m256i r4v[5], const __m256i rv[5]) {
+    process_nblocks_avx2(acc, msg, 16, r4v, rv);
+}
+
+static inline void process_128blocks_avx2(uint64_t acc[5], const uint8_t* msg,
+                                           const __m256i r4v[5], const __m256i rv[5]) {
+    process_nblocks_avx2(acc, msg, 32, r4v, rv);
 }
 
 static void process_1block_scalar(uint64_t acc[5], const uint8_t* m, const uint64_t r[5]) {
@@ -314,7 +392,7 @@ static void finalize_avx2(uint64_t acc[5], const uint64_t s[2], uint8_t tag[16])
     uint64_t v[2];
     convert_from_limbs(v, acc);
 
-    /* ct check if acc == p */
+    /* ct check if acc == p (wrap to 0 if so) */
     uint64_t eq_lo = ~(v[0] ^ 0xFFFFFFFFFFFFFFFFULL);
     eq_lo &= eq_lo >> 32; eq_lo &= eq_lo >> 16; eq_lo &= eq_lo >> 8;
     eq_lo &= eq_lo >> 4;  eq_lo &= eq_lo >> 2;  eq_lo &= eq_lo >> 1;
@@ -336,9 +414,7 @@ static void finalize_avx2(uint64_t acc[5], const uint64_t s[2], uint8_t tag[16])
     store64_le(tag + 8, t1);
 }
 
-/* -------------------------------------------------------------------------- */
-/* public API                                                                 */
-/* -------------------------------------------------------------------------- */
+/* public api */
 
 void poly1271_avx2_init(poly1271_avx2_ctx_t* ctx, const uint8_t key[32]) {
     uint8_t rc[16];
@@ -352,10 +428,11 @@ void poly1271_avx2_init(poly1271_avx2_ctx_t* ctx, const uint8_t key[32]) {
     mul_limbs_scalar(ctx->r3, ctx->r2, ctx->r);
     mul_limbs_scalar(ctx->r4, ctx->r2, ctx->r2);
 
-    /* rv[i] = {r^4, r^3, r^2, r^1} per limb for combine */
+    /* precompute powers of r for vectorized multiply */
     for (int i = 0; i < 5; i++) {
         ctx->rv[i] = _mm256_set_epi64x((int64_t)ctx->r[i], (int64_t)ctx->r2[i],
                                         (int64_t)ctx->r3[i], (int64_t)ctx->r4[i]);
+        ctx->r4v[i] = _mm256_set1_epi64x((int64_t)ctx->r4[i]);
     }
 
     ctx->s[0] = load64_le(key + 16);
@@ -382,22 +459,25 @@ void poly1271_avx2_update(poly1271_avx2_ctx_t* ctx, const uint8_t* msg, size_t l
         ctx->buflen = 0;
     }
 
-    while (len >= 480) {
-        process_32blocks_avx2(ctx->acc, msg, ctx->r4, ctx->rv);
-        msg += 480;
-        len -= 480;
+    while (len >= 1920) {  /* 128 blocks */
+        process_128blocks_avx2(ctx->acc, msg, ctx->r4v, ctx->rv);
+        msg += 1920; len -= 1920;
     }
-
-    while (len >= 240) {
-        process_16blocks_avx2(ctx->acc, msg, ctx->r4, ctx->rv);
-        msg += 240;
-        len -= 240;
+    while (len >= 960) {   /* 64 blocks */
+        process_64blocks_avx2(ctx->acc, msg, ctx->r4v, ctx->rv);
+        msg += 960; len -= 960;
     }
-
-    while (len >= 60) {
-        process_4blocks_avx2(ctx->acc, msg, ctx->r4, ctx->rv);
-        msg += 60;
-        len -= 60;
+    while (len >= 480) {   /* 32 blocks */
+        process_32blocks_avx2(ctx->acc, msg, ctx->r4v, ctx->rv);
+        msg += 480; len -= 480;
+    }
+    while (len >= 240) {   /* 16 blocks */
+        process_16blocks_avx2(ctx->acc, msg, ctx->r4v, ctx->rv);
+        msg += 240; len -= 240;
+    }
+    while (len >= 60) {    /* 4 blocks */
+        process_4blocks_avx2(ctx->acc, msg, ctx->r4v, ctx->rv);
+        msg += 60; len -= 60;
     }
 
     while (len >= 15) {
