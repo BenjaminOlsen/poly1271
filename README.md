@@ -4,7 +4,7 @@ Poly1271 is a polynomial MAC using the Mersenne prime 2^127 - 1, similar to
 Poly1305. Security is in the same ballpark as Poly1305 (~100+ bits, pending
 more rigorous analysis). May run faster than a scalar Poly1305
 implementation on messages over 256 bytes depending on platform, thanks to
-the simpler modular reduction and instruction level parallelism.
+the simpler modular reduction.
 
 ## Usage
 
@@ -55,23 +55,10 @@ cmake --build build --config Release
 can do  `--benchmark_filter="65536"` to run only that benchmark size, also.
 
 
-## Performance
-
-i7-1265U, MSVC, 64KB messages:
-
-| Implementation | Throughput | vs Poly1305 |
-|----------------|------------|-------------|
-| Poly1305       | 2.17 GiB/s | -           |
-| Poly1271       | 2.90 GiB/s | +34%        |
-
-Slower for <256 byte messages due to key setup (precomputing r^2, r^3, r^4).
-
 ### AVX2 (prototype)
 
 A SIMD implementation exists using radix-2^26 representation and 4-way
-parallel processing. On Alder Lake it hits 3.75 GiB/s (+73% vs Poly1305).
-Performance varies by platform - some older chips throttle AVX2 frequency
-enough that scalar wins. Not part of stable API.
+parallel processing. On Alder Lake it hits 3.75 GiB/s, but it's a prototype.
 
 ```c
 #ifdef __AVX2__
@@ -89,16 +76,36 @@ The difference is the prime: Poly1305 uses 2^130 - 5, we use 2^127 - 1.
 This Mersenne prime has the nice property that 2^127 ≡ 1, so reduction
 is just addition (no multiply by 5).
 
-The main optimization is 4 block parallel processing. Instead of:
+### Precomputation: Then and Now
+
+Bernstein's original hash127 (1999) also used 2^127 - 1, but with 4-byte blocks.
+A 1KB message meant 256 blocks, requiring precomputed powers r¹ through r²⁵⁶.
+This needed ~10KB of tables per key—a "disaster for applications handling many
+keys simultaneously" (from the Poly1305 paper).
+
+Poly1305 solved this by switching to 16-byte blocks and Horner's method:
 
     acc = ((((acc + m1)*r + m2)*r + m3)*r + m4)*r
 
-we compute:
+No precomputation needed—just multiply by r each iteration.
+
+### Multi-Block Optimization
+
+Modern implementations (including ours) precompute just r², r³, r⁴ (~48 bytes)
+to enable 4-way parallel processing:
 
     acc = (acc + m1)*r^4 + m2*r^3 + m3*r^2 + m4*r
 
-The four multiplies are independent, so the CPU can overlap them. We
-precompute r^2, r^3, r^4 during key setup.
+The four multiplies are independent, so the CPU can pipeline them. This is NOT
+the same as hash127's precomputation problem—we store 3 extra values, not
+hundreds.
+
+This optimization benefits both Poly1305 and Poly1271 equally. Poly1271's
+advantage is simpler reduction: no multiply-by-5 after each of those four
+multiplies.
+
+See [docs/lineage.md](docs/lineage.md) for the full history from hash127
+through Poly1305 to Poly1271.
 
 ## Testing
 
@@ -106,7 +113,7 @@ A Python reference implementation verifies test vectors using arbitrary-precisio
 integers (no overflow bugs possible):
 
 ```
-python test/poly1271_ref.py
+python ref/poly1271_ref.py
 ```
 
 If the output matches the C implementation, both are almost certainly correct.

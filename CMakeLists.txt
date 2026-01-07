@@ -57,6 +57,22 @@ if(POLY1271_BUILD_TESTS)
 endif()
 
 if(POLY1271_BUILD_BENCH)
+    add_executable(bench_rdtsc
+        bench/bench_rdtsc.c
+        ref/poly1305.c
+    )
+    target_include_directories(bench_rdtsc PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/ref
+    )
+    target_link_libraries(bench_rdtsc PRIVATE poly1271)
+    if(MSVC)
+        target_compile_options(bench_rdtsc PRIVATE /O2 /arch:AVX2)
+    else()
+        target_compile_options(bench_rdtsc PRIVATE -O3 -mavx2)
+    endif()
+
+    # Google Benchmark
     find_package(benchmark QUIET)
     if(benchmark_FOUND)
         add_executable(bench_poly_mac
@@ -74,6 +90,6 @@ if(POLY1271_BUILD_BENCH)
             target_compile_options(bench_poly_mac PRIVATE -O3 -mavx2)
         endif()
     else()
-        message(STATUS "Google Benchmark not found, skipping benchmarks")
+        message(STATUS "Google Benchmark not found, skipping bench_poly_mac")
     endif()
 endif()
