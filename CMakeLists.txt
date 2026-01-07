@@ -33,16 +33,27 @@ if(POLY1271_BUILD_TESTS)
     add_executable(test_ct test/test_ct.c)
     target_link_libraries(test_ct PRIVATE poly1271)
 
+    add_executable(test_poly1305
+        test/test_poly1305.c
+        ref/poly1305.c
+    )
+    target_include_directories(test_poly1305 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/ref
+    )
+
     if(MSVC)
         target_compile_options(test_poly1271 PRIVATE /arch:AVX2)
         target_compile_options(test_ct PRIVATE /arch:AVX2)
+        target_compile_options(test_poly1305 PRIVATE /arch:AVX2)
     else()
         target_compile_options(test_poly1271 PRIVATE -mavx2)
         target_compile_options(test_ct PRIVATE -mavx2)
+        target_compile_options(test_poly1305 PRIVATE -mavx2)
     endif()
 
     add_test(NAME poly1271_tests COMMAND test_poly1271)
     add_test(NAME poly1271_ct COMMAND test_ct)
+    add_test(NAME poly1305_kat COMMAND test_poly1305)
 endif()
 
 if(POLY1271_BUILD_BENCH)
@@ -50,11 +61,11 @@ if(POLY1271_BUILD_BENCH)
     if(benchmark_FOUND)
         add_executable(bench_poly_mac
             bench/bench_poly_mac.cpp
-            bench/poly1305.c
+            ref/poly1305.c
         )
         target_include_directories(bench_poly_mac PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/bench
+            ${CMAKE_CURRENT_SOURCE_DIR}/ref
         )
         target_link_libraries(bench_poly_mac PRIVATE poly1271 benchmark::benchmark)
         if(MSVC)

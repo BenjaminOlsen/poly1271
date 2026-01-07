@@ -52,6 +52,9 @@ cmake --build build --config Release
 ./build/bench_poly_mac               # Unix
 ```
 
+can do  `--benchmark_filter="65536"` to run only that benchmark size, also.
+
+
 ## Performance
 
 i7-1265U, MSVC, 64KB messages:

@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define POLY1305_CTX_MAX_SIZE 224u
+#define POLY1305_CTX_MAX_SIZE 320u  /* Expanded for r^2, r^3, r^4 precomputation */
 
 typedef union {
     uint8_t opaque[POLY1305_CTX_MAX_SIZE];
