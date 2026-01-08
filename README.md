@@ -1,7 +1,10 @@
 # Poly1271
 
 Poly1271 is a polynomial MAC using the Mersenne prime 2^127 - 1, similar to
-Poly1305. Security is in the same ballpark as Poly1305 (~100+ bits, pending
+Poly1305 in design - create an unforgeable tag of a message from the evaluation 
+of a polynomial at a secret point in a prime field.
+
+Security is in the same ballpark as Poly1305 (~100+ bits, pending
 more rigorous analysis). May run faster than a scalar Poly1305
 implementation on messages over 256 bytes depending on platform, thanks to
 the simpler modular reduction.
@@ -58,7 +61,7 @@ can do  `--benchmark_filter="65536"` to run only that benchmark size, also.
 ### AVX2 (prototype)
 
 A SIMD implementation exists using radix-2^26 representation and 4-way
-parallel processing. On Alder Lake it hits 3.75 GiB/s, but it's a prototype.
+parallel processing. On Alder Lake it hits > 3.75 GiB/s, but it's a prototype.
 
 ```c
 #ifdef __AVX2__
@@ -104,8 +107,6 @@ This optimization benefits both Poly1305 and Poly1271 equally. Poly1271's
 advantage is simpler reduction: no multiply-by-5 after each of those four
 multiplies.
 
-See [docs/lineage.md](docs/lineage.md) for the full history from hash127
-through Poly1305 to Poly1271.
 
 ## Testing
 
